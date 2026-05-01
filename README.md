@@ -160,7 +160,7 @@ You can override this with the `OLLAMA_BASE_URL` environment variable.
 Clone the repository and create a virtual environment:
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/tburz/Medical-RAG-QA-System.git
 cd rag_medical_project
 python -m venv .venv
 ```
