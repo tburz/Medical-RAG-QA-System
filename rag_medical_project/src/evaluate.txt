@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import argparse
+import csv
+from pathlib import Path
+from typing import Dict, List
+
+import pandas as pd
+
+
+MANUAL_COLUMNS = [
+    "question",
+    "model",
+    "latency_seconds",
+    "consistency_1_to_5",
+    "relevance_1_to_5",
+    "context_use_1_to_5",
+    "hallucination_risk_1_to_5",
+    "medical_terminology_1_to_5",
+    "overall_notes",
+    "answer",
+]
+
+
+def export_manual_review(answers_path: str, output_path: str) -> pd.DataFrame:
+    df = pd.read_csv(answers_path)
+    manual = pd.DataFrame(
+        {
+            "question": df["question"],
+            "model": df["model"],
+            "latency_seconds": df["latency_seconds"],
+            "consistency_1_to_5": "",
+            "relevance_1_to_5": "",
+            "context_use_1_to_5": "",
+            "hallucination_risk_1_to_5": "",
+            "medical_terminology_1_to_5": "",
+            "overall_notes": "",
+            "answer": df["answer"],
+        }
+    )
+    manual = manual[MANUAL_COLUMNS]
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    manual.to_csv(path, index=False)
+    return manual
+
+
+def summarize_manual_scores(manual_path: str, output_path: str) -> pd.DataFrame:
+    df = pd.read_csv(manual_path)
+    score_cols = [
+        "consistency_1_to_5",
+        "relevance_1_to_5",
+        "context_use_1_to_5",
+        "hallucination_risk_1_to_5",
+        "medical_terminology_1_to_5",
+    ]
+    for col in score_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    summary = df.groupby("model")[score_cols + ["latency_seconds"]].mean(numeric_only=True).reset_index()
+    summary.to_csv(output_path, index=False)
+    return summary
+
+
+def maybe_run_ragas(answers_path: str, output_path: str) -> bool:
+    try:
+        from ragas import evaluate  # type: ignore
+        from ragas.metrics import faithfulness, answer_relevancy  # type: ignore
+        from ragas.llms import LangchainLLMWrapper  # type: ignore
+        from ragas.embeddings import LangchainEmbeddingsWrapper  # type: ignore
+        from ragas.run_config import RunConfig  # type: ignore
+        from langchain_ollama import ChatOllama, OllamaEmbeddings  # type: ignore
+        from datasets import Dataset  # type: ignore
+    except Exception as e:
+        print(f"RAGAS import failed: {e}")
+        return False
+
+    df = pd.read_csv(answers_path)
+    contexts: List[List[str]] = []
+    for raw in df["retrieved_context"].fillna(""):
+        try:
+            import json
+
+            parsed = json.loads(raw)
+            contexts.append([item.get("document", "") for item in parsed])
+        except Exception:
+            contexts.append([])
+
+    ragas_df = pd.DataFrame(
+        {
+            "question": df["question"],
+            "answer": df["answer"],
+            "contexts": contexts,
+        }
+    )
+
+    dataset = Dataset.from_pandas(ragas_df)
+    evaluator_llm = LangchainLLMWrapper(
+        ChatOllama(
+            model="llama3.1:8b-instruct-q4_K_M",
+            temperature=0,
+            base_url="http://localhost:11434",
+        )
+    )
+
+    evaluator_embeddings = LangchainEmbeddingsWrapper(
+        OllamaEmbeddings(
+            model="nomic-embed-text",
+            base_url="http://localhost:11434",
+        )
+    )
+
+    run_config = RunConfig(
+        timeout=600,
+        max_retries=2,
+        max_wait=30,
+        max_workers=1,
+    )
+
+    result = evaluate(
+        dataset,
+        metrics=[
+            faithfulness,
+            answer_relevancy,
+        ],
+        llm=evaluator_llm,
+        embeddings=evaluator_embeddings,
+        run_config=run_config,
+    )
+
+    result.to_pandas().to_csv(output_path, index=False)
+    return True
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Create evaluation sheets and optional summaries.")
+    parser.add_argument("--answers", default="results/answers.csv")
+    parser.add_argument("--manual-output", default="results/manual_eval.csv")
+    parser.add_argument("--summary-output", default="results/manual_summary.csv")
+    parser.add_argument("--ragas-output", default="results/ragas_scores.csv")
+    parser.add_argument("--summarize-manual", action="store_true")
+    parser.add_argument("--try-ragas", action="store_true")
+    args = parser.parse_args()
+
+    manual = export_manual_review(args.answers, args.manual_output)
+    print(f"Manual review sheet written: {args.manual_output} ({len(manual)} rows)")
+
+    if args.summarize_manual:
+        summary = summarize_manual_scores(args.manual_output, args.summary_output)
+        print(f"Manual score summary written: {args.summary_output} ({len(summary)} rows)")
+
+    if args.try_ragas:
+        ok = maybe_run_ragas(args.answers, args.ragas_output)
+        if ok:
+            print(f"RAGAS results written: {args.ragas_output}")
+        else:
+            print("RAGAS not available in this environment; skipped.")
+
+
+if __name__ == "__main__":
+    main()
