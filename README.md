@@ -1,5 +1,7 @@
 # Medical Infectious-Disease RAG QA System
 
+*Note: This branch (Notebook) is for the academic submission, containing the notebook, final paper, and scoring.*
+
 A Retrieval-Augmented Generation (RAG) system for answering infectious-disease questions using PubMed abstracts as the knowledge base. The project compares three local open-source language models through the same retrieval pipeline to evaluate answer quality, factual grounding, and hallucination risk.
 
 **Project authors:** Christopher Protheroe and Tyler Burzenski
